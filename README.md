@@ -1,5 +1,11 @@
 Readme.nd
 
+October 22, 2026
+
+Fixing BUGS.  My good pal Claude is helping me to fix them.
+
+
+
 December 3, 2024
 
 I am at the very least fairly confident it works again.  I
@@ -21,10 +27,10 @@ what I think.
 
 July 5, 2023
 
-This is a program to check an LL(1) Grammar for Left Recursion, 
+This is a program to check an LL(1) Grammar for Left Recursion,
 Syntax errors, orphan productions, and conflicts.  This project
 is done, as far as I am concerned.  There may be some updates
-for bugs (not me!) and also to get rid of some of the dead 
+for bugs (not me!) and also to get rid of some of the dead
 weight.  There is some stuff in there that just
 doesn't do anything.  There is a sample grammar (action.gram)
 that has about 100 non terminals.
