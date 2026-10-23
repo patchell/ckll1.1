@@ -1,0 +1,650 @@
+diff -u a/Lexer.cpp b/Lexer.cpp
+--- a/Lexer.cpp	2026-10-23 03:33:24.400012565 +0000
++++ b/Lexer.cpp	2026-10-23 03:33:24.400979501 +0000
+@@ -216,7 +216,7 @@
+ 				do
+ 				{
+ 					c = LexGet();
+-				} while (c != '\n');
++				} while (c != '\n' && c != EOF);
+ 				LexUnGet(c);
+ 			}
+ 			else
+diff -u a/ParseTable.cpp b/ParseTable.cpp
+--- a/ParseTable.cpp	2026-10-23 03:33:24.395637237 +0000
++++ b/ParseTable.cpp	2026-10-23 03:33:24.396880369 +0000
+@@ -133,6 +133,12 @@
+ 		pSetMember = FIRSTy.GetHead();
+ 		while (pSetMember)
+ 		{
++			if (pSetMember->GetSetMemberSymbol()->IsEmpty())
++			{
++				//epsilon is not an input token, it never gets a column entry
++				pSetMember = pSetMember->GetNext();
++				continue;
++			}
+ 			if(pOut) fprintf(pOut, "BEGIN %s ******\n", pSetMember->GetSetMemberLexeme()->GetName());
+ 			Col = GetTerminalIndex(pSetMember->GetSetMemberLexeme());
+ 			Row = GetNonTerminalIndex(pProductionRule->GetLHS());
+diff -u a/Parser.cpp b/Parser.cpp
+--- a/Parser.cpp	2026-10-23 03:33:24.397845255 +0000
++++ b/Parser.cpp	2026-10-23 03:33:24.398877604 +0000
+@@ -83,7 +83,7 @@
+ 		else
+ 		{
+ 			pExp[0] = int(Expected);
+-			pGot[1] = 0;
++			pExp[1] = 0;
+ 		}
+ 		fprintf(stderr, "Line %d: Column:%d Unexpected Token:Got %d:%s Expected %d:%s\n",
+ 			GetLexer()->GetLineNumber(),
+@@ -389,6 +389,9 @@
+ 			pSI = GetValueStack()->Look(CStack::StackPosition::STACK_TOP);
+ 			CStackItem::CheckStackItem(pSI, CStackItem::ValueType::pRULE);
+ 			pRule = (CRule*)pSI->GetPointerData();
++			if (pRule->GetNumLexemes() > 0)
++				fprintf(stderr, "WARNING Line %d: '.' (epsilon) follows other symbols in the same production. Missing '->' ?\n",
++					GetLexer()->GetLineNumber());
+ 			pRule->AddLexeme(pLexeme);
+ 			LookaHeadToken = Expect(LookaHeadToken, CToken::LLRD_Token::EMPTY);
+ 			Loop = FALSE;
+diff -u a/RecDecParGen.cpp b/RecDecParGen.cpp
+--- a/RecDecParGen.cpp	2026-10-23 03:33:24.391561992 +0000
++++ b/RecDecParGen.cpp	2026-10-23 03:33:24.392548980 +0000
+@@ -277,10 +277,6 @@
+ 		pNonTerminalSetMember = GetLexer()->GetSymTab()->GetNonTerminalSet()->GetHead();
+ 		while (pNonTerminalSetMember)
+ 		{
+-			if (strcmp("AddExpr_1", pNonTerminalSetMember->GetSetMemberSymbol()->GetName()) == 0)
+-				bDebugTag = TRUE;
+-			else
+-				bDebugTag = FALSE;
+ 			if (pOut) fprintf(pOut, ">%s ------------< Iteration %d >----------\n", 
+ 				pNonTerminalSetMember->GetSetMemberSymbol()->GetName(),
+ 				Iterration
+@@ -312,125 +308,73 @@
+ {
+ 	//-------------------------------------------
+ 	// CreateFollowSets
+-	// 
+-	// 
+-	//	1.	First put $(the end of input 
+-	//		marker) in Follow(S) (S is the
+-	//		 start symbol)
+-	//	2.	If there is a production A->aBb,
+-	//		 (where a can be a whole string)
+-	//		 then everything in FIRST(b) 
+-	//		except for e is placed in FOLLOW(B).
+-	//	3.	If there is a production A->aB, then
+-	//		 everything in FOLLOW(A) is in FOLLOW(B)
+-	//	4.	If there is a production A->aBb,
+-	//		 where FIRST(b) contains e, then 
+-	//		everything in FOLLOW(A) is in 
+-	//		FOLLOW(B)	//
++	//
++	// $ was already placed in FOLLOW(start) by
++	// CParser::Parse (rule 1).  Rules 2, 3 and 4
++	// are applied to every position of every
++	// production until nothing changes.
+ 	//-------------------------------------------
+-	CSymbol* pSym;
+-	CSetMember* pNonTerminalSetMember;
++	BOOL bChanged;
+ 	int Iteration = 0;
+-	BOOL bChanged = FALSE;
+-	int LoopCount;
+-	int Itteration = 0;
+-	//----------------------------------------------
+-	// Rule #1 is NOT needed (ha-ha)
+-	//----------------------------------------------
+-	//---------------------------------------------
+-	// Find the FOLLOW set for all of the other non
+-	// terminal symbols.
+-	//---------------------------------------------
+-	LoopCount = 100;
++
+ 	do
+ 	{
+-		if(pOut) fprintf(pOut, "######### Follow Set Itteration #%d\n", ++Iteration);
++		if (pOut) fprintf(pOut, "######### Follow Set Iteration #%d\n", ++Iteration);
+ 		bChanged = FALSE;
+-		pNonTerminalSetMember = GetLexer()->GetSymTab()->GetNonTerminalSet()->GetHead();
+-		while (pNonTerminalSetMember)
+-		{
+-			pSym = pNonTerminalSetMember->GetSetMemberSymbol();
+-			bChanged |= ApplyFollowRulesTo(pOut, pSym);
+-			pNonTerminalSetMember = pNonTerminalSetMember->GetNext();
+-		}
+-	} while (bChanged && --LoopCount);	//end of do loop
+-}
+-
+-BOOL CRecDecParGen::ApplyFollowRulesTo(FILE* pOut, CSymbol* pSym)
+-{
+-	//-------------------------------------------------
+-	// ApplyFollowRulesTo
+-	// 
+-	// pSym is a Non Terminal symbol.  We use this
+-	// symbol to go through all of the productions
+-	// looking for a production that the FOLLOW SET
+-	// rules can be applied to.
+-	//-------------------------------------------------
+-	BOOL bChanged = FALSE;
+-	CSymbol* pProductionSymbol;
+-	CSetMember* pNonTerminalSetMember;
+-	CRule* pRule;
+-
+-	pNonTerminalSetMember = GetLexer()->GetSymTab()->GetNonTerminalSet()->GetHead();
+-	if(pOut) fprintf(pOut, "------------Looking For %s ---------------\n", pSym->GetName());
+-	while (pNonTerminalSetMember)
+-	{
+-		pProductionSymbol = pNonTerminalSetMember->GetSetMemberSymbol();
+-		pRule = pProductionSymbol->GetHead();
+-		while (pRule)
++		CSetMember* pNT = GetLexer()->GetSymTab()->GetNonTerminalSet()->GetHead();
++		while (pNT)
+ 		{
+-			bChanged |= pRule->DoesThisRuleHave(pOut, pSym);
+-			pRule = pRule->GetNext();
++			CRule* pRule = pNT->GetSetMemberSymbol()->GetHead();
++			while (pRule)
++			{
++				bChanged |= pRule->ApplyFollow(pOut);
++				pRule = pRule->GetNext();
++			}
++			pNT = pNT->GetNext();
+ 		}
+-		pNonTerminalSetMember = pNonTerminalSetMember->GetNext();
+-	}
+-	return bChanged;
++	} while (bChanged);
+ }
+ 
+ void CRecDecParGen::CreateNullableSet(FILE* pOut)
+ {
+ 	//-----------------------------------------------
+ 	// CreateNullableSet
++	//
++	// A non terminal is nullable if ANY of its rules
++	// consists entirely of nullable symbols
++	// (epsilon counts as nullable).  Repeat until
++	// no new non terminal is found.
+ 	//-----------------------------------------------
+-	CSymbol* pSymLHS;
+-	CRule* pRule;
+-	CSetMember* pMember;
+-	CSetMember* pNTLHS;
+-	int Iteration = 0;
+-	BOOL bChanged = FALSE;
+-	BOOL bNull = FALSE;
++	BOOL bChanged;
+ 
+-	if(pOut) fprintf(pOut,"----- Generate Nullables-------\n");
+ 	do
+ 	{
+ 		bChanged = FALSE;
+-		pNTLHS = GetLexer()->GetSymTab()->GetNonTerminalSet()->GetHead();
++		CSetMember* pNTLHS = GetLexer()->GetSymTab()->GetNonTerminalSet()->GetHead();
+ 		while (pNTLHS)
+ 		{
+-			bNull = FALSE;
+-			pSymLHS = pNTLHS->GetSetMemberSymbol();
+-			pRule = pSymLHS->GetHead();
+-			while (pRule && !bNull)
++			CSymbol* pSymLHS = pNTLHS->GetSetMemberSymbol();
++			if (pSymLHS->IsNotNullable())
+ 			{
+-				pRule->Print(pOut, TRUE, TRUE, 0);
+-				bNull |= pRule->DoesThisRuleHaveEpsilon();
+-				if (bNull)
++				CRule* pRule = pSymLHS->GetHead();
++				while (pRule)
+ 				{
+-					pSymLHS->SetNullable(TRUE);
+-					pMember = new CSetMember;
+-					pMember->Create(pSymLHS);
+-					bChanged |= GetNullableSet()->AddToSet(pMember);
++					if (pRule->RuleTotallyNullable())
++					{
++						CSetMember* pMember = new CSetMember;
++
++						pSymLHS->SetNullable(TRUE);
++						pMember->Create(pSymLHS);
++						GetNullableSet()->AddToSet(pMember);
++						bChanged = TRUE;
++						break;
++					}
++					pRule = pRule->GetNext();
+ 				}
+-				bNull = FALSE;
+-				pRule = pRule->GetNext();
+ 			}
+ 			pNTLHS = pNTLHS->GetNext();
+ 		}
+-		if(pOut) fprintf(pOut, "************ Nullable Iteration %d *********\n", ++Iteration);
+-		if (Iteration > 100)
+-			bChanged = FALSE;
+ 	} while (bChanged);
+-	if(pOut) fprintf(pOut, "----- Done Generate Nullables-------\n");
+ }
+ 
+ 
+diff -u a/RecDecParGen.h b/RecDecParGen.h
+--- a/RecDecParGen.h	2026-10-23 03:33:24.393624751 +0000
++++ b/RecDecParGen.h	2026-10-23 03:33:24.394697798 +0000
+@@ -22,7 +22,6 @@
+ 	int CheckForDirectRecursion(FILE* pO, CSet* pNonTerminals);
+ 	void CreateFirstSets(FILE* pOut);
+ 	void CreateFollowSets(FILE* pOut);
+-	BOOL ApplyFollowRulesTo(FILE* pOut, CSymbol* pSym);
+ 	void CreateNullableSet(FILE* pOut);
+ 	void CreateNotNullablesSet(FILE* pOut);
+ 	CSet* GetNotNullables() { return &m_NotNullables; }
+diff -u a/Rule.cpp b/Rule.cpp
+--- a/Rule.cpp	2026-10-23 03:33:24.387257441 +0000
++++ b/Rule.cpp	2026-10-23 03:33:24.388312428 +0000
+@@ -30,244 +30,81 @@
+ )
+ {
+ 	//-----------------------------------
+-	//	1.	If X is a terminal then 
+-	//			First(X) is just X!
+-	//	2.	If there is a Production (i.e. Nullable)
+-	//			 X -> e then add e to 
+-	//			first(X)
+-	//	3.	If there is a Production 
+-	//			X -> Y1Y2..Yk then add 
+-	//			first(Y1Y2..Yk) to 
+-	//			first(X)
+-	//	4.	First(Y1Y2..Yk) is either
+-	//		1.	First(Y1) (if First(Y1) 
+-	//				doesn't contain epsilon)
+-	//		2.	OR(if First(Y1) does 
+-	//			contain epsilon) then 
+-	// 
+-	//			First(Y1Y2..Yk) is 
+-	//			everything in First(Y1) 
+-	//			< except for epsilon > 
+-	//			as well as everything in First(Y2..Yk)
+-	//		3.	If First(Y1) First(Y2)..
+-	//			First(Yk) all contain epsion 
+-	//			then add epsilon to 
+-	//			First(Y1Y2..Yk) as well.
++	// FIRST(Y1Y2..Yk), added to FirstSet
++	//
++	//	Walk Y1, Y2, ... in order.  Add
++	//	FIRST(Yi) minus epsilon.  Stop at the
++	//	first Yi whose FIRST does not contain
++	//	epsilon.  If we make it all the way
++	//	through (every Yi can vanish) then
++	//	epsilon belongs in the result too.
++	//
++	//	This uses the FIRST sets themselves
++	//	to decide nullability, so indirect
++	//	nullability (A -> B C, B and C both
++	//	nullable) propagates through the
++	//	fixed point iteration automatically.
++	//
++	//	returns TRUE if FirstSet grew.
+ 	//-----------------------------------
+ 	BOOL bChanged = FALSE;
+-	CLexeme* pLexeme = GetHead();
+-	int n = GetNumLexemes();
++	BOOL bAllNullable = TRUE;
++	CSymbol* pEmpty = CLexer::GetEmpty();
+ 
+-
+-	if (pY1->IsEmpty())	//Rule 2.
++	for (CLexeme* pY = pY1; pY; pY = pY->GetNext())
+ 	{
+-		if (dbTag && pOut)
+-		{
+-			fprintf(pOut, "             Rule 2:");
+-		}
+-		bChanged = FirstSet.Union(pOut,CLexer::GetEmpty()->GetFirstSet());
+-		if (dbTag && pOut)
+-		{
+-			fprintf(pOut, "%s\n", bChanged?"Changed":"Not Changed");
+-		}
+-	}
+-	else if (pY1->GetFirstSet()->DoesNotContain(pOut, CLexer::GetEmpty()))
+-	{
+-		//Rule 4.1
+-		if (dbTag && pOut)
+-		{
+-			fprintf(pOut, "             Rule 4.1\n");
+-		}
+-		bChanged = FirstSet.Union(pOut, pY1->GetFirstSet());
+-		if (dbTag && pOut)
+-		{
+-			fprintf(pOut, "Rule 4.1:%s\n", bChanged ? "Changed" : "Not Changed");
+-		}
+-	}
+-	else
+-	{
+-		//Rule 4.2
+-		if (dbTag && pOut)
+-		{
+-			fprintf(pOut, "             Rule 4.2");
+-		}
+-		if (pY1->GetFirstSet()->Contains(pOut, CLexer::GetEmpty()))
+-		{
+-			bChanged = FIRST_Y1Y2__Yk(pOut, pY1, FirstSet);
+-		}
+-		if (dbTag && pOut)
++		CSet* pF = pY->GetFirstSet();
++
++		bChanged |= FirstSet.UnionExceptEmpty(pF);
++		if (!pF->Contains(NULL, pEmpty))
+ 		{
+-			fprintf(pOut, "%s\n", bChanged ? "Changed" : "Not Changed");
++			bAllNullable = FALSE;
++			break;
+ 		}
+ 	}
+-	//Rule 4.3
+-	if (DoAllLexemesContainEpsilong())
+-		FirstSet.Union(pOut, CLexer::GetEmpty()->GetFirstSet());
++	if (bAllNullable)
++		bChanged |= FirstSet.Union((FILE*)NULL, pEmpty->GetFirstSet());
+ 	return bChanged;
+ }
+ 
+-
+-BOOL CRule::FIRST_Y1Y2__Yk(
+-	FILE* pOut,
+-	CLexeme* pY1, 
+-	CSet& FirstSet
+-)
++BOOL CRule::ApplyFollow(FILE* pOut)
+ {
+-	//-------------------------------------
+-	//	4.	First(Y1Y2..Yk) is either
+-	//		2.	OR(if First(Y1) does 
+-	//			contain epsilon) then 
+-	//			First(Y1Y2..Yk) is 
+-	//			everything in First(Y1) 
+-	//			< except for epsilon > as well 
+-	//			as everything in First(Y2..Yk)
+-	//-------------------------------------
+-	BOOL bChanged = FALSE;
+-
+-	if (pY1->GetNext() == 0)
+-	{
+-		//---------------------------------
+-		// End of the chain, from here we
+-		// will be only returning.
+-		//---------------------------------
+-		if(pOut) fprintf(pOut, "End of Y1Y2...Yk Chain\n");
+-	}
+-	else
+-	{
+-		//-------------------------------------------
+-		// There are still more Lexemes
+-		//-------------------------------------------
+-		bChanged = FIRST_Y1Y2__Yk(
+-			pOut, 
+-			pY1->GetNext(), 
+-			FirstSet
+-		);
+-		bChanged |= FirstSet.UnionExceptEmpty(pY1->GetFirstSet());
+-	}
+-	return bChanged;
+-}
+-
+-BOOL CRule::FOLLOW(FILE* pOut)
+-{
+-	//	1.	First put $(the end of input 
+-	//		marker) in Follow(S) (S is the
+-	//		 start symbol)
+-	//	2.	If there is a production A->aBb,
+-	//		 (where a can be a whole string)
+-	//		 then everything in FIRST(b) 
+-	//		except for e is placed in FOLLOW(B).
+-	//		NOTE:We are looking for a NON Terminal
+-	//		followed by "something", which can be
+-	//		either a Terminal or NON Terminal
+-	//	3.	If there is a production A->aB, then
+-	//		 everything in FOLLOW(A) is in FOLLOW(B)
+-	//		NOTE:B is a Non Terminal
+-	//	4.	If there is a production A->aBb,
+-	//		 where FIRST(b) contains e, then 
+-	//		everything in FOLLOW(A) is in 
+-	//		FOLLOW(B)
+-	//		NOTE:We have a NON Terminal followed
+-	//		by another NON Terminal that has
+-	//		e in its first set
++	//-------------------------------------------
++	// Apply the FOLLOW rules to EVERY non terminal
++	// occurrence in this production A -> a B b
++	//
++	//	2.	FOLLOW(B) gets FIRST(b) minus epsilon
++	//	3/4.If b is empty or ALL of b can vanish,
++	//		FOLLOW(B) gets FOLLOW(A).
++	//
++	// b is the entire remainder of the rule,
++	// not just the next symbol.
++	//
++	// returns TRUE if any FOLLOW set grew.
+ 	//-------------------------------------------
+ 	BOOL bChanged = FALSE;
+-	CLexeme* pLast, * pNextToLast;
++	CSymbol* pA = GetLHS();
++	CSymbol* pEmpty = CLexer::GetEmpty();
+ 
+-	pLast = GetTail();
+-	pNextToLast = pLast->GetPrev();
+-	if (pNextToLast &&
+-		pNextToLast->IsNonTerminal() &&
+-		pLast->GetFirstSet()->Contains(pOut, CLexer::GetEmpty())
+-	)
++	for (CLexeme* pB = GetHead(); pB; pB = pB->GetNext())
+ 	{
+-		//------------
+-		// Rule #4
+-		//------------
+-		if(pOut) fprintf(pOut, "Apply Rule 4\n");
+-//		bChanged = FOLLOW_RULE4();
+-		if(pOut) fprintf(pOut, "----------\n");
+-	}
+-	else if (pNextToLast && 
+-		pNextToLast->IsNonTerminal()
+-	)
+-	{
+-		//------------
+-		// Rule #2
+-		//------------
+-		if(pOut) fprintf(pOut, "Apply Rule 2\n");
+-//		bChanged = FOLLOW_RULE2();
+-		if(pOut) fprintf(pOut, "----------\n");
+-	}
+-	else if (pLast->IsNonTerminal())
+-	{
+-		//------------
+-		// Rule #3
+-		//------------
+-		if(pOut) fprintf(pOut, "Apply Rule 3\n");
+-//		bChanged = FOLLOW_RULE3();
+-		if(pOut) fprintf(pOut, "----------\n");
+-	}
+-	if(pOut) fprintf(pOut, "Changed?:%s\n", bChanged ? "TRUE" : "FALSE");
+-	return bChanged;
+-}
+-
+-BOOL CRule::FOLLOW_RULE2(FILE* pOut, CSymbol* pA, CSymbol* pB, CSymbol *pb)
+-{
+-	//-------------------------------------------
+-	//	2.	If there is a production A->aBb,
+-	//		 (where a can be a whole string)
+-	//		 then everything in FIRST(b) 
+-	//		except for e is placed in FOLLOW(B).
+-	//-------------------------------------------
+-	BOOL bChanged;
+-
+-	bChanged = pB->GetFollowSet()->UnionExceptEmpty(pb->GetFirstSet());
+-	return bChanged;
+-}
+-
+-BOOL CRule::FOLLOW_RULE3(FILE* pOut, CSymbol *pA, CSymbol* pB)
+-{
+-	//-------------------------------------------
+-	//	3.	If there is a production A->aB, then
+-	//		 everything in FOLLOW(A) is in 
+-	//		FOLLOW(B)
+-	//-------------------------------------------
+-	BOOL bChanged;
+-
+-	bChanged = pB->GetFollowSet()->Union(pOut, pA->GetFollowSet());
+-	return bChanged;
+-}
+-
+-BOOL CRule::FOLLOW_RULE4(
+-	FILE* pOut, 
+-	CSymbol* pA, 
+-	CSymbol* pB, 
+-	CSymbol *pb
+-)
+-{
+-	//-------------------------------------------
+-	//	4.	If there is a production A->aBb,
+-	//		 where FIRST(b) contains e, then 
+-	//		everything in FOLLOW(A) is in 
+-	//		FOLLOW(B)	
+-	//-------------------------------------------
+-	BOOL bChanged;
+-
+-	bChanged = pB->GetFollowSet()->Union(pOut, pA->GetFollowSet());
+-	return bChanged;
+-}
+-
+-BOOL CRule::DoAllLexemesContainEpsilong()
+-{
+-	BOOL bAllLexemesContainEpsilong = TRUE;
+-	CLexeme* pLexeme = GetHead();
++		BOOL bRestCanVanish = TRUE;
+ 
+-	while (pLexeme && bAllLexemesContainEpsilong)
+-	{
+-		bAllLexemesContainEpsilong = pLexeme->GetLexemeSymbol()->DoesThisProductionHaveEpsilon();
+-		pLexeme = pLexeme->GetNext();
++		if (pB->IsTerminal())	//also skips epsilon and $
++			continue;
++		for (CLexeme* pb = pB->GetNext(); pb; pb = pb->GetNext())
++		{
++			bChanged |= pB->GetFollowSet()->UnionExceptEmpty(pb->GetFirstSet());
++			if (!pb->GetFirstSet()->Contains(NULL, pEmpty))
++			{
++				bRestCanVanish = FALSE;
++				break;
++			}
++		}
++		if (bRestCanVanish)
++			bChanged |= pB->GetFollowSet()->Union((FILE*)NULL, pA->GetFollowSet());
+ 	}
+-	return bAllLexemesContainEpsilong;
++	return bChanged;
+ }
+ 
+ BOOL CRule::DoesThisRuleHaveEpsilon()
+@@ -289,79 +126,6 @@
+ 	return bRuleHasEpsilon;
+ }
+ 
+-BOOL CRule::DoesThisRuleHave(FILE* pOut, CSymbol* pSym)
+-{
+-	BOOL bYes = FALSE;
+-	CLexeme* pLexemeLast;
+-	CLexeme* pLexemeNextToLast;
+-	int Count = 0;
+-
+-	pLexemeLast = GetTail();
+-	pLexemeNextToLast = pLexemeLast->GetPrev();
+-	if (pLexemeNextToLast)
+-	{
+-		if (pLexemeNextToLast->GetLexemeSymbol() == pSym)
+-		{
+-			if(pOut) fprintf(pOut, "\t%s", GetLHS()->GetName());
+-			Print(pOut);
+-			if (pLexemeNextToLast->IsNonTerminal())
+-			{
+-				if (pLexemeLast->GetFirstSet()->Contains(pOut, CLexer::GetEmpty()))
+-				{
+-					if(pOut) fprintf(pOut, "Rule 2 3 4:%s", GetLHS()->GetName());
+-					Print(pOut);
+-					bYes |= FOLLOW_RULE2(
+-						pOut,
+-						GetLHS(),
+-						pLexemeNextToLast->GetLexemeSymbol(),
+-						pLexemeLast->GetLexemeSymbol()
+-					);
+-					bYes |= FOLLOW_RULE3(
+-						pOut,
+-						GetLHS(),
+-						pLexemeLast->GetLexemeSymbol()
+-					);
+-					bYes |= FOLLOW_RULE4(
+-						pOut,
+-						GetLHS(), 
+-						pLexemeNextToLast->GetLexemeSymbol(),
+-						pLexemeLast->GetLexemeSymbol()
+-					);
+-				}
+-				else 
+-				{
+-					if(pOut) fprintf(pOut, "Rule 2 3:%s", GetLHS()->GetName());
+-					Print(pOut);
+-					bYes = FOLLOW_RULE2(
+-						pOut,
+-						GetLHS(),
+-						pLexemeNextToLast->GetLexemeSymbol(),
+-						pLexemeLast->GetLexemeSymbol()
+-					);
+-					bYes |= FOLLOW_RULE3(
+-						pOut,
+-						GetLHS(),
+-						pLexemeLast->GetLexemeSymbol()
+-					);
+-				}
+-			}
+-			else if (pLexemeLast->GetLexemeSymbol() == pSym)
+-			{
+-				if(pOut) fprintf(pOut, "Rule 3:%s", GetLHS()->GetName());
+-				Print(pOut);
+-				bYes = FOLLOW_RULE3(pOut, GetLHS(), pLexemeLast->GetLexemeSymbol());
+-			}
+-		}
+-	}
+-	else if (pLexemeLast->GetLexemeSymbol() == pSym)
+-	{
+-		if(pOut) fprintf(pOut, "Rule 3:%s", GetLHS()->GetName());
+-		Print(pOut);
+-		FOLLOW_RULE3(pOut, GetLHS(), pLexemeLast->GetLexemeSymbol());
+-	}
+-	return bYes;
+-}
+-
+ BOOL CRule::RuleTotallyNullable()
+ {
+ 	BOOL rV = FALSE;
+diff -u a/Rule.h b/Rule.h
+--- a/Rule.h	2026-10-23 03:33:24.389265944 +0000
++++ b/Rule.h	2026-10-23 03:33:24.390596400 +0000
+@@ -20,18 +20,8 @@
+ 		CSet& FirstSet,
+ 		BOOL dbTag
+ 	);
+-    BOOL FIRST_Y1Y2__Yk(
+-		FILE* pOut,
+-		CLexeme* pY11, 
+-		CSet& FirstSet
+-	);
+-	BOOL FOLLOW(FILE* pOut);
+-	BOOL FOLLOW_RULE2(FILE* pOut, CSymbol* pA, CSymbol* pB, CSymbol *pb);
+-	BOOL FOLLOW_RULE3(FILE* pOut, CSymbol* pA, CSymbol* pB);
+-	BOOL FOLLOW_RULE4(FILE* pOut, CSymbol* pA, CSymbol* pB, CSymbol *pb);
+-	BOOL DoAllLexemesContainEpsilong();
++	BOOL ApplyFollow(FILE* pOut);
+ 	BOOL DoesThisRuleHaveEpsilon();
+-	BOOL DoesThisRuleHave(FILE* pOut, CSymbol* pSym);
+ 	int GetNumLexemes() { return m_nLexemes;}
+ 	int IncNumLexemes() { return m_nLexemes++; }
+ 	BOOL RuleTotallyNullable();

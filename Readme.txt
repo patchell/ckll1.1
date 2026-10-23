@@ -10,24 +10,4 @@ Create a Parse Table
 Check Parse Table for Conflicts
 Exit
 
-
-Files:
-Global.h	// global definitions and include files
-Lexeme.h	// Lexeme class
-Lexer.h		// Lexical Analyzer
-Parser.h	// Parses the Test Grammar
-ParseTable.h	// Parse table for the grammar
-ParseTableMemberEntry.h	//Parse Table data object
-Rule.h		// Class that contains a list of Lexemes
-Set.h		// Set Class
-SetMember.h	// Set member wrapper
-
-Lexeme.cpp
-Lexer.cpp
-Main.cpp
-Parser.cpp
-ParseTable.cpp
-ParseTableMemberEntry.cpp
-Rule.cpp
-Set.cpp
-SetMember.cpp
+All files have been included.
